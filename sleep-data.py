@@ -12,8 +12,8 @@ local_tz = pytz.timezone("Asia/Seoul")
 load_dotenv()
 CONFIG = dotenv_values()
 
-def get_sleep_data(garmin, date):
-    return garmin.get_sleep_data(date.isoformat())
+def get_sleep_data(garmin, target_date):
+    return garmin.get_sleep_data(target_date.isoformat())
 
 def format_duration(seconds):
     minutes = (seconds or 0) // 60
@@ -43,7 +43,7 @@ def sleep_data_exists(client, database_id, sleep_date):
         filter={"property": "Long Date", "date": {"equals": sleep_date}}
     )
     results = query.get('results', [])
-    return results[0] if results else None  # Ensure it returns None instead of causing IndexError
+    return results[0] if results else None
 
 def create_sleep_data(client, database_id, sleep_data, skip_zero_sleep=True):
     daily_sleep = sleep_data.get('dailySleepDTO', {})
@@ -95,11 +95,11 @@ def main():
     garmin.login()
     client = Client(auth=notion_token)
 
-    # Check last 365 days
+    # Get last 365 days
     today = datetime.today().date()
     for i in range(365):
-        date = today - timedelta(days=i)
-        data = get_sleep_data(garmin, date)
+        target_date = today - timedelta(days=i)
+        data = get_sleep_data(garmin, target_date)
         if data:
             sleep_date = data.get('dailySleepDTO', {}).get('calendarDate')
             if sleep_date and not sleep_data_exists(client, database_id, sleep_date):
