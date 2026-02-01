@@ -1,16 +1,15 @@
 from datetime import datetime, timedelta
 from garminconnect import Garmin
 from notion_client import Client
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 import pytz
 import os
 
 # Constants
-local_tz = pytz.timezone("America/New_York")
+local_tz = pytz.timezone("Asia/Seoul")
 
 # Load environment variables
 load_dotenv()
-CONFIG = dotenv_values()
 
 
 def get_sleep_data_for_date(garmin, d):
@@ -37,7 +36,10 @@ def format_time_readable(timestamp):
 
 
 def format_date_for_name(sleep_date):
-    return datetime.strptime(sleep_date, "%Y-%m-%d").strftime("%d.%m.%Y") if sleep_date else "Unknown"
+    if not sleep_date:
+        return "Unknown"
+    dt = datetime.strptime(sleep_date, "%Y-%m-%d")
+    return f"{dt.year}년 {dt.month}월 {dt.day}일"
 
 
 def sleep_data_exists(client, database_id, sleep_date):
@@ -99,8 +101,6 @@ def create_sleep_data(client, database_id, sleep_data, skip_zero_sleep=True):
 
 
 def main():
-    load_dotenv()
-
     garmin_email = os.getenv("GARMIN_EMAIL")
     garmin_password = os.getenv("GARMIN_PASSWORD")
     notion_token = os.getenv("NOTION_TOKEN")
@@ -127,4 +127,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
