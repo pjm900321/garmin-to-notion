@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from garminconnect import Garmin
 from notion_client import Client
 from dotenv import load_dotenv, dotenv_values
@@ -12,9 +12,8 @@ local_tz = pytz.timezone("America/New_York")
 load_dotenv()
 CONFIG = dotenv_values()
 
-def get_sleep_data(garmin):
-    today = datetime.today().date()
-    return garmin.get_sleep_data(today.isoformat())
+def get_sleep_data_for_date(garmin, d):
+    return garmin.get_sleep_data(d.isoformat())
 
 def format_duration(seconds):
     minutes = (seconds or 0) // 60
@@ -93,11 +92,20 @@ def main():
     garmin.login()
     client = Client(auth=notion_token)
 
-    data = get_sleep_data(garmin)
+# "전체" = 아주 크게 잡기 (예: 5000일 ≈ 13년)
+lookback_days = int(os.getenv("LOOKBACK_DAYS", "365"))
+
+today = datetime.today().date()
+start_date = today - timedelta(days=lookback_days - 1)
+
+d = start_date
+while d <= today:
+    data = get_sleep_data_for_date(garmin, d)
     if data:
         sleep_date = data.get('dailySleepDTO', {}).get('calendarDate')
         if sleep_date and not sleep_data_exists(client, database_id, sleep_date):
             create_sleep_data(client, database_id, data, skip_zero_sleep=True)
+    d += timedelta(days=1)
 
 if __name__ == '__main__':
     main()
