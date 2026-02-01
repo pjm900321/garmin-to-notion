@@ -309,8 +309,26 @@ def main():
     client = Client(auth=notion_token)
 
     activities = get_all_activities(garmin)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
     for activity in activities:
+        start_gmt = activity.get("startTimeGMT")
+        if not start_gmt:
+            continue
+
+        s = start_gmt.strip().replace("Z", "+00:00")
+        try:
+            start_dt = datetime.fromisoformat(s)
+        except ValueError:
+            continue
+
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+        # ✅ 365일 이전 활동이면 여기서 루프 종료 (최신순이라 break 가능)
+        if start_dt < cutoff:
+            break
+
         activity_start_gmt = activity.get("startTimeGMT")
         activity_name = format_entertainment(activity.get("activityName", "Unnamed Activity"))
 
