@@ -107,67 +107,19 @@ def format_pace(average_speed):
     else:
         return ""
     
-def activity_exists(client, database_id, activity_date, activity_type, activity_name):
+def activity_exists(client, database_id, activity_date):
+    """시작 시간으로 중복 체크 (같은 시간에 두 운동 불가능)"""
+    try:
+        query = client.databases.query(
+            database_id=database_id,
+            filter={"property": "Date", "date": {"equals": activity_date}}
+        )
+        results = query['results']
+        return results[0] if results else None
+    except Exception as e:
+        print(f"Error querying Notion: {e}")
+        return None
 
-    # Check if an activity already exists in the Notion database and return it if found.
-
-    # Handle the activity_type which is now a tuple
-    if isinstance(activity_type, tuple):
-        main_type, _ = activity_type
-    else:
-        main_type = activity_type[0] if isinstance(activity_type, (list, tuple)) else activity_type
-    
-    # Determine the correct activity type for the lookup
-    lookup_type = "Stretching" if "stretch" in activity_name.lower() else main_type
-    
-    query = client.databases.query(
-        database_id=database_id,
-        filter={
-            "and": [
-                {"property": "Date", "date": {"equals": activity_date.split('T')[0]}},
-                {"property": "Activity Type", "select": {"equals": lookup_type}},
-                {"property": "Activity Name", "title": {"equals": activity_name}}
-            ]
-        }
-    )
-    results = query['results']
-    return results[0] if results else None
-
-
-def activity_needs_update(existing_activity, new_activity):
-    existing_props = existing_activity['properties']
-    
-    activity_name = new_activity.get('activityName', '').lower()
-    activity_type, activity_subtype = format_activity_type(
-        new_activity.get('activityType', {}).get('typeKey', 'Unknown'),
-        activity_name
-    )
-    
-    # Check if 'Subactivity Type' property exists
-    has_subactivity = (
-        'Subactivity Type' in existing_props and 
-        existing_props['Subactivity Type'] is not None and
-        existing_props['Subactivity Type'].get('select') is not None
-    )
-    
-    return (
-        existing_props['Distance (km)']['number'] != round(new_activity.get('distance', 0) / 1000, 2) or
-        existing_props['Duration (min)']['number'] != round(new_activity.get('duration', 0) / 60, 2) or
-        existing_props['Calories']['number'] != round(new_activity.get('calories', 0)) or
-        existing_props['Avg Pace']['rich_text'][0]['text']['content'] != format_pace(new_activity.get('averageSpeed', 0)) or
-        existing_props['Avg Power']['number'] != round(new_activity.get('avgPower', 0), 1) or
-        existing_props['Max Power']['number'] != round(new_activity.get('maxPower', 0), 1) or
-        existing_props['Training Effect']['select']['name'] != format_training_effect(new_activity.get('trainingEffectLabel', 'Unknown')) or
-        existing_props['Aerobic']['number'] != round(new_activity.get('aerobicTrainingEffect', 0), 1) or
-        existing_props['Aerobic Effect']['select']['name'] != format_training_message(new_activity.get('aerobicTrainingEffectMessage', 'Unknown')) or
-        existing_props['Anaerobic']['number'] != round(new_activity.get('anaerobicTrainingEffect', 0), 1) or
-        existing_props['Anaerobic Effect']['select']['name'] != format_training_message(new_activity.get('anaerobicTrainingEffectMessage', 'Unknown')) or
-        existing_props['PR']['checkbox'] != new_activity.get('pr', False) or
-        existing_props['Fav']['checkbox'] != new_activity.get('favorite', False) or
-        existing_props['Activity Type']['select']['name'] != activity_type or
-        (has_subactivity and existing_props['Subactivity Type']['select']['name'] != activity_subtype) or
-        (not has_subactivity)  # If the property doesn't exist, we need an update
-    )
 
 def create_activity(client, database_id, activity):
 
@@ -210,47 +162,12 @@ def create_activity(client, database_id, activity):
     if icon_url:
         page["icon"] = {"type": "external", "external": {"url": icon_url}}
     
-    client.pages.create(**page)
-    
-def update_activity(client, existing_activity, new_activity):
+    try:
+        client.pages.create(**page)
+        print(f"Created: {activity_name}")
+    except Exception as e:
+        print(f"Error creating activity: {e}")
 
-    # Update an existing activity in the Notion database with new data
-    activity_name = new_activity.get('activityName', 'Unnamed Activity')
-    activity_type, activity_subtype = format_activity_type(
-        new_activity.get('activityType', {}).get('typeKey', 'Unknown'),
-        activity_name
-    )
-    
-    # Get icon for the activity type
-    icon_url = ACTIVITY_ICONS.get(activity_subtype if activity_subtype != activity_type else activity_type)
-    
-    properties = {
-        "Activity Type": {"select": {"name": activity_type}},
-        "Subactivity Type": {"select": {"name": activity_subtype}},
-        "Distance (km)": {"number": round(new_activity.get('distance', 0) / 1000, 2)},
-        "Duration (min)": {"number": round(new_activity.get('duration', 0) / 60, 2)},
-        "Calories": {"number": round(new_activity.get('calories', 0))},
-        "Avg Pace": {"rich_text": [{"text": {"content": format_pace(new_activity.get('averageSpeed', 0))}}]},
-        "Avg Power": {"number": round(new_activity.get('avgPower', 0), 1)},
-        "Max Power": {"number": round(new_activity.get('maxPower', 0), 1)},
-        "Training Effect": {"select": {"name": format_training_effect(new_activity.get('trainingEffectLabel', 'Unknown'))}},
-        "Aerobic": {"number": round(new_activity.get('aerobicTrainingEffect', 0), 1)},
-        "Aerobic Effect": {"select": {"name": format_training_message(new_activity.get('aerobicTrainingEffectMessage', 'Unknown'))}},
-        "Anaerobic": {"number": round(new_activity.get('anaerobicTrainingEffect', 0), 1)},
-        "Anaerobic Effect": {"select": {"name": format_training_message(new_activity.get('anaerobicTrainingEffectMessage', 'Unknown'))}},
-        "PR": {"checkbox": new_activity.get('pr', False)},
-        "Fav": {"checkbox": new_activity.get('favorite', False)}
-    }
-    
-    update = {
-        "page_id": existing_activity['id'],
-        "properties": properties,
-    }
-    
-    if icon_url:
-        update["icon"] = {"type": "external", "external": {"url": icon_url}}
-        
-    client.pages.update(**update)
 
 def main():
     load_dotenv()
@@ -272,22 +189,13 @@ def main():
     # Process all activities
     for activity in activities:
         activity_date = activity.get('startTimeGMT')
-        activity_name = format_entertainment(activity.get('activityName', 'Unnamed Activity'))
-        activity_type, activity_subtype = format_activity_type(
-            activity.get('activityType', {}).get('typeKey', 'Unknown'),
-            activity_name
-        )
         
-        # Check if activity already exists in Notion
-        existing_activity = activity_exists(client, database_id, activity_date, activity_type, activity_name)
-        
-        if existing_activity:
-            if activity_needs_update(existing_activity, activity):
-                update_activity(client, existing_activity, activity)
-                # print(f"Updated: {activity_type} - {activity_name}")
-        else:
+        # 시작 시간으로만 중복 체크 (없으면 생성, 있으면 패스)
+        if not activity_exists(client, database_id, activity_date):
             create_activity(client, database_id, activity)
-            # print(f"Created: {activity_type} - {activity_name}")
+
+    print("Activity sync completed!")
+
 
 if __name__ == '__main__':
     main()
