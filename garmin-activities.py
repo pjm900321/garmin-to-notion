@@ -107,8 +107,8 @@ def format_pace(average_speed):
     else:
         return ""
     
-def activity_exists(client, database_id, activity_date, activity_name, duration):
-    """날짜 + 활동 이름 + 운동 시간으로 중복 체크"""
+def activity_exists(client, database_id, activity_date, calories):
+    """날짜 + 칼로리로 중복 체크"""
     try:
         date_only = activity_date.split('T')[0]
         
@@ -116,10 +116,9 @@ def activity_exists(client, database_id, activity_date, activity_name, duration)
             database_id=database_id,
             filter={
                 "and": [
-                    {"property": "Activity Name", "title": {"equals": activity_name}},
                     {"property": "Date", "date": {"on_or_after": date_only}},
                     {"property": "Date", "date": {"before": date_only + "T23:59:59"}},
-                    {"property": "Duration (min)", "number": {"equals": duration}}
+                    {"property": "Calories", "number": {"equals": calories}}
                 ]
             }
         )
@@ -198,11 +197,10 @@ def main():
     # Process all activities
     for activity in activities:
         activity_date = activity.get('startTimeGMT')
-        activity_name = format_entertainment(activity.get('activityName', 'Unnamed Activity'))
-        duration = round(activity.get('duration', 0) / 60)
+        calories = round(activity.get('calories', 0))
         
-        # 날짜 + 활동 이름 + 운동 시간으로 중복 체크
-        if not activity_exists(client, database_id, activity_date, activity_name, duration):
+        # 날짜 + 칼로리로 중복 체크
+        if not activity_exists(client, database_id, activity_date, calories):
             create_activity(client, database_id, activity)
 
     print("Activity sync completed!")
