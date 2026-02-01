@@ -175,7 +175,7 @@ def main():
             continue
 
         if data:
-            create_sleep_data(client, database_id, data, skip_zero_sleep=True)
+            create_sleep_data(client, database_id, data, skip_zero_sleep=False)
             created += 1
 
     print(f"Done. Created: {created} entries (missing days only).")
