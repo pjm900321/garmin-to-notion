@@ -20,32 +20,24 @@ def format_duration(seconds):
 
 
 def ts_to_iso_local(timestamp_ms):
-    """Notion date expects ISO8601. Convert Garmin GMT ms -> KST ISO."""
+    """Convert Garmin GMT(ms) -> KST ISO8601 string for Notion date."""
     if not timestamp_ms:
         return None
     dt_utc = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-    dt_local = dt_utc.astimezone(LOCAL_TZ)
-    return dt_local.isoformat()
+    return dt_utc.astimezone(LOCAL_TZ).isoformat()
 
 
 def ts_to_hhmm_local(timestamp_ms):
+    """Convert Garmin GMT(ms) -> KST HH:MM string."""
     if not timestamp_ms:
         return "Unknown"
     dt_utc = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
     return dt_utc.astimezone(LOCAL_TZ).strftime("%H:%M")
 
 
-def format_date_korean(sleep_date_str: str):
-    # sleep_date_str: "YYYY-MM-DD"
-    if not sleep_date_str:
-        return "Unknown"
-    d = datetime.strptime(sleep_date_str, "%Y-%m-%d").date()
-    return f"{d.year}년 {d.month}월 {d.day}일"
-
-
 def notion_fetch_existing_dates(client: Client, database_id: str, start_date: str, end_date: str):
     """
-    Fetch all existing pages in the DB whose 'Long Date' is within [start_date, end_date]
+    Fetch all existing pages in the DB whose 'Date' is within [start_date, end_date]
     Returns a set of 'YYYY-MM-DD' strings.
     """
     existing = set()
@@ -55,20 +47,20 @@ def notion_fetch_existing_dates(client: Client, database_id: str, start_date: st
         resp = client.databases.query(
             database_id=database_id,
             start_cursor=start_cursor,
+            page_size=100,
             filter={
                 "and": [
-                    {"property": "Long Date", "date": {"on_or_after": start_date}},
-                    {"property": "Long Date", "date": {"on_or_before": end_date}},
+                    {"property": "Date", "date": {"on_or_after": start_date}},
+                    {"property": "Date", "date": {"on_or_before": end_date}},
                 ]
-            }
+            },
         )
 
         for page in resp.get("results", []):
             props = page.get("properties", {})
-            long_date = props.get("Long Date", {}).get("date", {})
-            if long_date and long_date.get("start"):
-                # "YYYY-MM-DD" or ISO date-time; we only keep date part
-                existing.add(long_date["start"][:10])
+            d = props.get("Date", {}).get("date", {})
+            if d and d.get("start"):
+                existing.add(d["start"][:10])
 
         if not resp.get("has_more"):
             break
@@ -86,7 +78,9 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
     if not sleep_date:
         return
 
-    total_sleep = sum((daily_sleep.get(k, 0) or 0) for k in ["deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds"])
+    total_sleep = sum(
+        (daily_sleep.get(k, 0) or 0) for k in ["deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds"]
+    )
 
     if skip_zero_sleep and total_sleep == 0:
         print(f"Skipping sleep data for {sleep_date} (total sleep = 0)")
@@ -95,23 +89,18 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
     start_ts = daily_sleep.get("sleepStartTimestampGMT")
     end_ts = daily_sleep.get("sleepEndTimestampGMT")
 
+    # ✅ Title should be Times
+    times_title = f"{ts_to_hhmm_local(start_ts)} → {ts_to_hhmm_local(end_ts)}"
+
     properties = {
-        # ✅ Title: "YYYY년 M월 D일"
-        "Date": {"title": [{"text": {"content": format_date_korean(sleep_date)}}]},
+        # ✅ Times is TITLE (required)
+        "Times": {"title": [{"text": {"content": times_title}}]},
 
-        # ✅ Readable Times in KST
-        "Times": {
-            "rich_text": [
-                {"text": {"content": f"{ts_to_hhmm_local(start_ts)} → {ts_to_hhmm_local(end_ts)}"}}
-            ]
-        },
+        # ✅ Date is DATE (key for range queries & dedupe)
+        "Date": {"date": {"start": sleep_date}},
 
-        # ✅ Date key (range queries rely on this)
-        "Long Date": {"date": {"start": sleep_date}},
-
-        # ✅ Store full date-time (KST ISO)
-        "Full Date/Time": {"date": {"start": ts_to_iso_local(start_ts), "end": ts_to_iso_local(end_ts)}},
-
+        # ✅ Store full date-time (KST ISO) — only if start exists (avoid Notion 400)
+        # (will be conditionally injected below)
         "Total Sleep (h)": {"number": round(total_sleep / 3600, 1)},
         "Light Sleep (h)": {"number": round((daily_sleep.get("lightSleepSeconds", 0) or 0) / 3600, 1)},
         "Deep Sleep (h)": {"number": round((daily_sleep.get("deepSleepSeconds", 0) or 0) / 3600, 1)},
@@ -123,12 +112,25 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
         "Deep Sleep": {"rich_text": [{"text": {"content": format_duration(daily_sleep.get("deepSleepSeconds", 0))}}]},
         "REM Sleep": {"rich_text": [{"text": {"content": format_duration(daily_sleep.get("remSleepSeconds", 0))}}]},
         "Awake Time": {"rich_text": [{"text": {"content": format_duration(daily_sleep.get("awakeSleepSeconds", 0))}}]},
-
-        "Resting HR": {"number": sleep_data.get("restingHeartRate", 0) or 0},
     }
 
+    # Resting HR can appear in different places; be defensive
+    rhr = sleep_data.get("restingHeartRate")
+    if rhr is None:
+        rhr = daily_sleep.get("restingHeartRate")
+    properties["Resting HR"] = {"number": (rhr or 0)}
+
+    # Full Date/Time: avoid sending None values
+    start_iso = ts_to_iso_local(start_ts)
+    end_iso = ts_to_iso_local(end_ts)
+
+    if start_iso:
+        properties["Full Date/Time"] = {"date": {"start": start_iso}}
+        if end_iso:
+            properties["Full Date/Time"]["date"]["end"] = end_iso
+
     client.pages.create(parent={"database_id": database_id}, properties=properties, icon={"emoji": "😴"})
-    print(f"Created sleep entry for: {sleep_date}")
+    print(f"Created sleep entry for: {sleep_date} ({times_title})")
 
 
 def main():
@@ -154,7 +156,7 @@ def main():
     start_str = start_day.isoformat()
     end_str = today_kst.isoformat()
 
-    # ✅ Notion에 이미 존재하는 날짜를 범위로 한 번에 로딩
+    # ✅ Notion에 이미 존재하는 날짜(Date)들을 범위로 한 번에 로딩
     existing_dates = notion_fetch_existing_dates(client, database_id, start_str, end_str)
     print(f"Existing notion entries in range: {len(existing_dates)}")
 
@@ -166,7 +168,12 @@ def main():
         if d_str in existing_dates:
             continue
 
-        data = get_sleep_data_for_date(garmin, d)
+        try:
+            data = get_sleep_data_for_date(garmin, d)
+        except Exception as e:
+            print(f"Garmin error {d_str}: {e}")
+            continue
+
         if data:
             create_sleep_data(client, database_id, data, skip_zero_sleep=True)
             created += 1
