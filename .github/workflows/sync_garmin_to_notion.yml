@@ -2,7 +2,6 @@ name: Sync Garmin to Notion
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 한국시간 오후 12시 (정오)
     - cron: '0 15 * * *'  # 한국시간 밤 12시 (자정)
   workflow_dispatch:
 env:
