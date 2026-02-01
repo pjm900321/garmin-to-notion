@@ -3,82 +3,90 @@ from garminconnect import Garmin
 from notion_client import Client
 from dotenv import load_dotenv
 import os
+import time
 
-def get_all_daily_steps(garmin):
-    """
-    Get last x days of daily step count data from Garmin Connect.
-    """
-    startdate = date.today() - timedelta(days=1)
-    daterange = [startdate + timedelta(days=x) 
-                 for x in range((date.today() - startdate).days)] # excl. today
-    daily_steps = []
-    for d in daterange:
-        daily_steps += garmin.get_daily_steps(d.isoformat(), d.isoformat())
-    return daily_steps
+# Constants
+API_DELAY_SECONDS = 1  # Rate limiting 방지
+
+
+def get_daily_steps_for_date(garmin, d):
+    """특정 날짜의 걸음 수 데이터 가져오기"""
+    try:
+        steps_data = garmin.get_daily_steps(d.isoformat(), d.isoformat())
+        return steps_data[0] if steps_data else None
+    except Exception as e:
+        print(f"Error fetching steps data for {d}: {e}")
+        return None
+
 
 def daily_steps_exist(client, database_id, activity_date):
-    """
-    Check if daily step count already exists in the Notion database.
-    """
-    query = client.databases.query(
-        database_id=database_id,
-        filter={
-            "and": [
-                {"property": "Date", "date": {"equals": activity_date}},
-                {"property": "Activity Type", "title": {"equals": "Walking"}}
-            ]
-        }
-    )
-    results = query['results']
-    return results[0] if results else None
+    """Notion 데이터베이스에 해당 날짜의 걸음 수 데이터가 있는지 확인"""
+    try:
+        query = client.databases.query(
+            database_id=database_id,
+            filter={
+                "and": [
+                    {"property": "Date", "date": {"equals": activity_date}},
+                    {"property": "Activity Type", "title": {"equals": "Walking"}}
+                ]
+            }
+        )
+        results = query['results']
+        return results[0] if results else None
+    except Exception as e:
+        print(f"Error querying Notion for {activity_date}: {e}")
+        return None
+
 
 def steps_need_update(existing_steps, new_steps):
-    """
-    Compare existing steps data with imported data to determine if an update is needed.
-    """
+    """기존 데이터와 새 데이터 비교하여 업데이트 필요 여부 확인"""
     existing_props = existing_steps['properties']
-    activity_type = "Walking"
+    
+    new_total_steps = new_steps.get('totalSteps') or 0
+    new_step_goal = new_steps.get('stepGoal') or 0
+    new_total_distance = new_steps.get('totalDistance') or 0
     
     return (
-        existing_props['Total Steps']['number'] != new_steps.get('totalSteps') or
-        existing_props['Step Goal']['number'] != new_steps.get('stepGoal') or
-        existing_props['Total Distance (km)']['number'] != new_steps.get('totalDistance') or
-        existing_props['Activity Type']['title'] != activity_type
+        existing_props['Total Steps']['number'] != new_total_steps or
+        existing_props['Step Goal']['number'] != new_step_goal or
+        existing_props['Total Distance (km)']['number'] != round(new_total_distance / 1000, 2)
     )
 
+
 def update_daily_steps(client, existing_steps, new_steps):
-    """
-    Update an existing daily steps entry in the Notion database with new data.
-    """
-    total_distance = new_steps.get('totalDistance')
-    if total_distance is None:
-        total_distance = 0
+    """기존 걸음 수 데이터 업데이트"""
+    total_distance = new_steps.get('totalDistance') or 0
+    
     properties = {
-        "Activity Type":  {"title": [{"text": {"content": "Walking"}}]},
-        "Total Steps": {"number": new_steps.get('totalSteps')},
-        "Step Goal": {"number": new_steps.get('stepGoal')},
+        "Activity Type": {"title": [{"text": {"content": "Walking"}}]},
+        "Total Steps": {"number": new_steps.get('totalSteps') or 0},
+        "Step Goal": {"number": new_steps.get('stepGoal') or 0},
         "Total Distance (km)": {"number": round(total_distance / 1000, 2)}
     }
     
-    update = {
-        "page_id": existing_steps['id'],
-        "properties": properties,
-    }
-        
-    client.pages.update(**update)
+    try:
+        client.pages.update(page_id=existing_steps['id'], properties=properties)
+        print(f"Updated steps for: {new_steps.get('calendarDate')}")
+    except Exception as e:
+        print(f"Error updating steps for {new_steps.get('calendarDate')}: {e}")
 
-def create_daily_steps(client, database_id, steps):
-    """
-    Create a new daily steps entry in the Notion database.
-    """
-    total_distance = steps.get('totalDistance')
-    if total_distance is None:
-        total_distance = 0
+
+def create_daily_steps(client, database_id, steps, skip_zero_steps=True):
+    """새 걸음 수 데이터 생성"""
+    total_steps = steps.get('totalSteps') or 0
+    steps_date = steps.get('calendarDate')
+    
+    if skip_zero_steps and total_steps == 0:
+        print(f"Skipping steps data for {steps_date} as total steps is 0")
+        return
+    
+    total_distance = steps.get('totalDistance') or 0
+    
     properties = {
         "Activity Type": {"title": [{"text": {"content": "Walking"}}]},
-        "Date": {"date": {"start": steps.get('calendarDate')}},
-        "Total Steps": {"number": steps.get('totalSteps')},
-        "Step Goal": {"number": steps.get('stepGoal')},
+        "Date": {"date": {"start": steps_date}},
+        "Total Steps": {"number": total_steps},
+        "Step Goal": {"number": steps.get('stepGoal') or 0},
         "Total Distance (km)": {"number": round(total_distance / 1000, 2)}
     }
     
@@ -87,31 +95,64 @@ def create_daily_steps(client, database_id, steps):
         "properties": properties,
     }
     
-    client.pages.create(**page)
+    try:
+        client.pages.create(**page)
+        print(f"Created steps entry for: {steps_date}")
+    except Exception as e:
+        print(f"Error creating steps for {steps_date}: {e}")
+
 
 def main():
     load_dotenv()
 
-    # Initialize Garmin and Notion clients using environment variables
     garmin_email = os.getenv("GARMIN_EMAIL")
     garmin_password = os.getenv("GARMIN_PASSWORD")
     notion_token = os.getenv("NOTION_TOKEN")
     database_id = os.getenv("NOTION_STEPS_DB_ID")
 
-    # Initialize Garmin client and login
-    garmin = Garmin(garmin_email, garmin_password)
-    garmin.login()
+    # 필수 환경 변수 확인
+    if not all([garmin_email, garmin_password, notion_token, database_id]):
+        print("Error: Missing required environment variables")
+        return
+
+    try:
+        garmin = Garmin(garmin_email, garmin_password)
+        garmin.login()
+    except Exception as e:
+        print(f"Garmin login failed: {e}")
+        return
+
     client = Client(auth=notion_token)
 
-    daily_steps = get_all_daily_steps(garmin)
-    for steps in daily_steps:
-        steps_date = steps.get('calendarDate')
-        existing_steps = daily_steps_exist(client, database_id, steps_date)
-        if existing_steps:
-            if steps_need_update(existing_steps, steps):
-                update_daily_steps(client, existing_steps, steps)
-        else:
-            create_daily_steps(client, database_id, steps)
+    # 전체 동기화 vs 일일 동기화
+    full_sync = os.getenv("FULL_SYNC", "false").lower() == "true"
+    lookback_days = int(os.getenv("LOOKBACK_DAYS", "365")) if full_sync else 7
+
+    today = date.today()
+    start_date = today - timedelta(days=lookback_days)
+
+    print(f"Syncing steps data from {start_date} to {today - timedelta(days=1)}")
+    print(f"Mode: {'Full sync' if full_sync else 'Recent sync'} ({lookback_days} days)")
+
+    d = start_date
+    while d < today:  # 오늘 제외 (아직 완료되지 않은 날)
+        steps_data = get_daily_steps_for_date(garmin, d)
+        
+        if steps_data:
+            steps_date = steps_data.get('calendarDate')
+            existing_steps = daily_steps_exist(client, database_id, steps_date)
+            
+            if existing_steps:
+                if steps_need_update(existing_steps, steps_data):
+                    update_daily_steps(client, existing_steps, steps_data)
+            else:
+                create_daily_steps(client, database_id, steps_data, skip_zero_steps=True)
+        
+        time.sleep(API_DELAY_SECONDS)
+        d += timedelta(days=1)
+
+    print("Steps sync completed!")
+
 
 if __name__ == '__main__':
     main()
