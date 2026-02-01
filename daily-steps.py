@@ -124,18 +124,16 @@ def main():
 
     client = Client(auth=notion_token)
 
-    # 전체 동기화 vs 일일 동기화
-    full_sync = os.getenv("FULL_SYNC", "false").lower() == "true"
-    lookback_days = int(os.getenv("LOOKBACK_DAYS", "365")) if full_sync else 7
+    # 항상 365일치 동기화
+    lookback_days = 365
 
     today = date.today()
     start_date = today - timedelta(days=lookback_days)
 
     print(f"Syncing steps data from {start_date} to {today - timedelta(days=1)}")
-    print(f"Mode: {'Full sync' if full_sync else 'Recent sync'} ({lookback_days} days)")
 
     d = start_date
-    while d < today:  # 오늘 제외 (아직 완료되지 않은 날)
+    while d < today:
         steps_data = get_daily_steps_for_date(garmin, d)
         
         if steps_data:
