@@ -149,7 +149,7 @@ def create_activity(client, database_id, activity):
         "Subactivity Type": {"select": {"name": activity_subtype}},
         "Activity Name": {"title": [{"text": {"content": activity_name}}]},
         "Distance (km)": {"number": round(activity.get('distance', 0) / 1000, 2)},
-        "Duration (min)": {"number": round(activity.get('duration', 0) / 60, 2)},
+        "Duration (min)": {"number": round(activity.get('duration', 0) / 60)},
         "Calories": {"number": round(activity.get('calories', 0))},
         "Avg Pace": {"rich_text": [{"text": {"content": format_pace(activity.get('averageSpeed', 0))}}]},
         "Avg Power": {"number": round(activity.get('avgPower', 0), 1)},
@@ -199,7 +199,7 @@ def main():
     for activity in activities:
         activity_date = activity.get('startTimeGMT')
         activity_name = format_entertainment(activity.get('activityName', 'Unnamed Activity'))
-        duration = round(activity.get('duration', 0) / 60, 2)
+        duration = round(activity.get('duration', 0) / 60)
         
         # 날짜 + 활동 이름 + 운동 시간으로 중복 체크
         if not activity_exists(client, database_id, activity_date, activity_name, duration):
