@@ -124,8 +124,8 @@ def main():
 
     client = Client(auth=notion_token)
 
-    # 항상 365일치 동기화
-    lookback_days = 365
+    # 항상 30일치 동기화
+    lookback_days = 30
 
     today = date.today()
     start_date = today - timedelta(days=lookback_days)
