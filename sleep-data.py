@@ -89,6 +89,13 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
     if not sleep_date:
         return
 
+    start_ts = daily_sleep.get("sleepStartTimestampGMT")
+    end_ts = daily_sleep.get("sleepEndTimestampGMT")
+
+    # ✅ Garmin이 수면 없는데도 0으로 리턴하는 케이스 방지 (Unknown/0h 생성 방지)
+    if not start_ts or not end_ts:
+        return
+
     total_sleep = sum(
         (daily_sleep.get(k, 0) or 0) for k in ["deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds"]
     )
@@ -96,9 +103,6 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
     if skip_zero_sleep and total_sleep == 0:
         print(f"Skipping sleep data for {sleep_date} (total sleep = 0)")
         return
-
-    start_ts = daily_sleep.get("sleepStartTimestampGMT")
-    end_ts = daily_sleep.get("sleepEndTimestampGMT")
 
     # ✅ Title should be Times
     times_title = f"{ts_to_hhmm_local(start_ts)} → {ts_to_hhmm_local(end_ts)}"
@@ -144,11 +148,16 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
 
 def update_sleep_data(client: Client, page_id: str, sleep_data: dict):
     """
-    Update existing Notion page when Resting HR was 0 (or you want to refresh it).
-    현재는 Resting HR만 업데이트 (원하면 다른 필드도 같이 추가 가능)
+    Update existing Notion page when Resting HR was 0.
+    + Garmin '가짜 0' DTO 방지 (start/end 없으면 업데이트 안 함)
     """
     daily_sleep = sleep_data.get("dailySleepDTO", {})
     if not daily_sleep:
+        return
+
+    start_ts = daily_sleep.get("sleepStartTimestampGMT")
+    end_ts = daily_sleep.get("sleepEndTimestampGMT")
+    if not start_ts or not end_ts:
         return
 
     rhr = sleep_data.get("restingHeartRate")
@@ -182,7 +191,9 @@ def main():
 
     # ✅ Today 기준을 한국시간으로
     today_kst = datetime.now(LOCAL_TZ).date()
-    start_day = today_kst - timedelta(days=364)  # today 포함 365일
+
+    # ✅ 최근 30일만 (오늘 포함)
+    start_day = today_kst - timedelta(days=29)
 
     start_str = start_day.isoformat()
     end_str = today_kst.isoformat()
@@ -194,7 +205,7 @@ def main():
     created = 0
     updated = 0
 
-    for i in range(365):
+    for i in range(30):
         d = start_day + timedelta(days=i)
         d_str = d.isoformat()
 
@@ -221,7 +232,7 @@ def main():
             print(f"Updated Resting HR for: {d_str}")
         else:
             # ➕ CREATE
-            create_sleep_data(client, database_id, data, skip_zero_sleep=False)
+            create_sleep_data(client, database_id, data, skip_zero_sleep=True)
             created += 1
 
     print(f"Done. Created: {created} entries. Updated: {updated} entries (Resting HR=0).")
