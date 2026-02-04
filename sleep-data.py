@@ -80,29 +80,34 @@ def notion_fetch_existing_pages(client: Client, database_id: str, start_date: st
     return existing
 
 
-def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_zero_sleep: bool = True):
+def build_sleep_properties(sleep_data: dict, skip_zero_sleep: bool = True):
+    """
+    Create Notion properties payload from Garmin sleep_data.
+    Returns (sleep_date_str, properties_dict) or (None, None) if invalid.
+    """
     daily_sleep = sleep_data.get("dailySleepDTO", {})
     if not daily_sleep:
-        return
+        return None, None
 
     sleep_date = daily_sleep.get("calendarDate")  # "YYYY-MM-DD"
     if not sleep_date:
-        return
+        return None, None
 
     start_ts = daily_sleep.get("sleepStartTimestampGMT")
     end_ts = daily_sleep.get("sleepEndTimestampGMT")
 
-    # ✅ Garmin이 수면 없는데도 0으로 리턴하는 케이스 방지 (Unknown/0h 생성 방지)
+    # ✅ Garmin이 수면 없는데도 0으로 리턴하는 케이스 방지
     if not start_ts or not end_ts:
-        return
+        return None, None
 
     total_sleep = sum(
-        (daily_sleep.get(k, 0) or 0) for k in ["deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds"]
+        (daily_sleep.get(k, 0) or 0)
+        for k in ["deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds"]
     )
 
     if skip_zero_sleep and total_sleep == 0:
         print(f"Skipping sleep data for {sleep_date} (total sleep = 0)")
-        return
+        return None, None
 
     # ✅ Title should be Times
     times_title = f"{ts_to_hhmm_local(start_ts)} → {ts_to_hhmm_local(end_ts)}"
@@ -142,35 +147,40 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
         if end_iso:
             properties["Full Date/Time"]["date"]["end"] = end_iso
 
-    client.pages.create(parent={"database_id": database_id}, properties=properties, icon={"emoji": "😴"})
+    return sleep_date, properties
+
+
+def create_sleep_page(client: Client, database_id: str, sleep_data: dict, skip_zero_sleep: bool = True):
+    sleep_date, props = build_sleep_properties(sleep_data, skip_zero_sleep=skip_zero_sleep)
+    if not sleep_date or not props:
+        return False
+
+    client.pages.create(
+        parent={"database_id": database_id},
+        properties=props,
+        icon={"emoji": "😴"},
+    )
+    times_title = props["Times"]["title"][0]["text"]["content"]
     print(f"Created sleep entry for: {sleep_date} ({times_title})")
+    return True
 
 
-def update_sleep_data(client: Client, page_id: str, sleep_data: dict):
+def update_sleep_page_full(client: Client, page_id: str, sleep_data: dict, skip_zero_sleep: bool = True):
     """
-    Update existing Notion page when Resting HR was 0.
-    + Garmin '가짜 0' DTO 방지 (start/end 없으면 업데이트 안 함)
+    ✅ HR=0 같은 '업데이트 필요' 날짜를 발견하면
+    그 날의 수면 데이터 전체를 Notion 페이지에 덮어쓰기(update) 함.
     """
-    daily_sleep = sleep_data.get("dailySleepDTO", {})
-    if not daily_sleep:
-        return
-
-    start_ts = daily_sleep.get("sleepStartTimestampGMT")
-    end_ts = daily_sleep.get("sleepEndTimestampGMT")
-    if not start_ts or not end_ts:
-        return
-
-    rhr = sleep_data.get("restingHeartRate")
-    if rhr is None:
-        rhr = daily_sleep.get("restingHeartRate")
-    rhr = rhr or 0
+    sleep_date, props = build_sleep_properties(sleep_data, skip_zero_sleep=skip_zero_sleep)
+    if not sleep_date or not props:
+        return False
 
     client.pages.update(
         page_id=page_id,
-        properties={
-            "Resting HR": {"number": rhr},
-        },
+        properties=props,
     )
+    times_title = props["Times"]["title"][0]["text"]["content"]
+    print(f"Updated FULL sleep entry for: {sleep_date} ({times_title})")
+    return True
 
 
 def main():
@@ -204,6 +214,8 @@ def main():
 
     created = 0
     updated = 0
+    skipped = 0
+    errors = 0
 
     for i in range(30):
         d = start_day + timedelta(days=i)
@@ -211,31 +223,39 @@ def main():
 
         page_info = existing_pages.get(d_str)
 
-        # ✅ 이미 있고 Resting HR > 0 이면 스킵
+        # ✅ 이미 있고 Resting HR > 0 이면 OK → 스킵
         if page_info and page_info["resting_hr"] > 0:
+            skipped += 1
             continue
 
-        # ❗ 없거나(Rest HR=0 포함) Garmin 재조회
+        # ❗ 없거나 (또는 Resting HR=0이면) Garmin 재조회
         try:
             data = get_sleep_data_for_date(garmin, d)
         except Exception as e:
             print(f"Garmin error {d_str}: {e}")
+            errors += 1
             continue
 
         if not data:
+            skipped += 1
             continue
 
         if page_info:
-            # 🔁 UPDATE (Resting HR=0 케이스)
-            update_sleep_data(client, page_info["page_id"], data)
-            updated += 1
-            print(f"Updated Resting HR for: {d_str}")
+            # 🔁 UPDATE (HR=0 이었던 날짜 → FULL UPDATE)
+            ok = update_sleep_page_full(client, page_info["page_id"], data, skip_zero_sleep=True)
+            if ok:
+                updated += 1
+            else:
+                skipped += 1
         else:
             # ➕ CREATE
-            create_sleep_data(client, database_id, data, skip_zero_sleep=True)
-            created += 1
+            ok = create_sleep_page(client, database_id, data, skip_zero_sleep=True)
+            if ok:
+                created += 1
+            else:
+                skipped += 1
 
-    print(f"Done. Created: {created} entries. Updated: {updated} entries (Resting HR=0).")
+    print(f"Done. Created: {created} | Updated(full): {updated} | Skipped: {skipped} | Errors: {errors}")
 
 
 if __name__ == "__main__":
