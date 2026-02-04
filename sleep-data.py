@@ -35,12 +35,18 @@ def ts_to_hhmm_local(timestamp_ms):
     return dt_utc.astimezone(LOCAL_TZ).strftime("%H:%M")
 
 
-def notion_fetch_existing_dates(client: Client, database_id: str, start_date: str, end_date: str):
+def notion_fetch_existing_pages(client: Client, database_id: str, start_date: str, end_date: str):
     """
     Fetch all existing pages in the DB whose 'Date' is within [start_date, end_date]
-    Returns a set of 'YYYY-MM-DD' strings.
+    Returns dict:
+    {
+        "YYYY-MM-DD": {
+            "page_id": "...",
+            "resting_hr": 0
+        }
+    }
     """
-    existing = set()
+    existing = {}
     start_cursor = None
 
     while True:
@@ -59,8 +65,13 @@ def notion_fetch_existing_dates(client: Client, database_id: str, start_date: st
         for page in resp.get("results", []):
             props = page.get("properties", {})
             d = props.get("Date", {}).get("date", {})
-            if d and d.get("start"):
-                existing.add(d["start"][:10])
+            if not d or not d.get("start"):
+                continue
+
+            day = d["start"][:10]
+            rhr = props.get("Resting HR", {}).get("number", 0)
+
+            existing[day] = {"page_id": page["id"], "resting_hr": (rhr or 0)}
 
         if not resp.get("has_more"):
             break
@@ -99,8 +110,6 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
         # ✅ Date is DATE (key for range queries & dedupe)
         "Date": {"date": {"start": sleep_date}},
 
-        # ✅ Store full date-time (KST ISO) — only if start exists (avoid Notion 400)
-        # (will be conditionally injected below)
         "Total Sleep (h)": {"number": round(total_sleep / 3600, 1)},
         "Light Sleep (h)": {"number": round((daily_sleep.get("lightSleepSeconds", 0) or 0) / 3600, 1)},
         "Deep Sleep (h)": {"number": round((daily_sleep.get("deepSleepSeconds", 0) or 0) / 3600, 1)},
@@ -133,6 +142,28 @@ def create_sleep_data(client: Client, database_id: str, sleep_data: dict, skip_z
     print(f"Created sleep entry for: {sleep_date} ({times_title})")
 
 
+def update_sleep_data(client: Client, page_id: str, sleep_data: dict):
+    """
+    Update existing Notion page when Resting HR was 0 (or you want to refresh it).
+    현재는 Resting HR만 업데이트 (원하면 다른 필드도 같이 추가 가능)
+    """
+    daily_sleep = sleep_data.get("dailySleepDTO", {})
+    if not daily_sleep:
+        return
+
+    rhr = sleep_data.get("restingHeartRate")
+    if rhr is None:
+        rhr = daily_sleep.get("restingHeartRate")
+    rhr = rhr or 0
+
+    client.pages.update(
+        page_id=page_id,
+        properties={
+            "Resting HR": {"number": rhr},
+        },
+    )
+
+
 def main():
     load_dotenv()
 
@@ -156,29 +187,44 @@ def main():
     start_str = start_day.isoformat()
     end_str = today_kst.isoformat()
 
-    # ✅ Notion에 이미 존재하는 날짜(Date)들을 범위로 한 번에 로딩
-    existing_dates = notion_fetch_existing_dates(client, database_id, start_str, end_str)
-    print(f"Existing notion entries in range: {len(existing_dates)}")
+    # ✅ Notion에 이미 존재하는 페이지(Date 범위) 로딩 (page_id + resting_hr)
+    existing_pages = notion_fetch_existing_pages(client, database_id, start_str, end_str)
+    print(f"Existing notion entries in range: {len(existing_pages)}")
 
     created = 0
+    updated = 0
+
     for i in range(365):
         d = start_day + timedelta(days=i)
         d_str = d.isoformat()
 
-        if d_str in existing_dates:
+        page_info = existing_pages.get(d_str)
+
+        # ✅ 이미 있고 Resting HR > 0 이면 스킵
+        if page_info and page_info["resting_hr"] > 0:
             continue
 
+        # ❗ 없거나(Rest HR=0 포함) Garmin 재조회
         try:
             data = get_sleep_data_for_date(garmin, d)
         except Exception as e:
             print(f"Garmin error {d_str}: {e}")
             continue
 
-        if data:
+        if not data:
+            continue
+
+        if page_info:
+            # 🔁 UPDATE (Resting HR=0 케이스)
+            update_sleep_data(client, page_info["page_id"], data)
+            updated += 1
+            print(f"Updated Resting HR for: {d_str}")
+        else:
+            # ➕ CREATE
             create_sleep_data(client, database_id, data, skip_zero_sleep=False)
             created += 1
 
-    print(f"Done. Created: {created} entries (missing days only).")
+    print(f"Done. Created: {created} entries. Updated: {updated} entries (Resting HR=0).")
 
 
 if __name__ == "__main__":
