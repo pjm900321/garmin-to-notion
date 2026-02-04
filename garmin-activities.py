@@ -63,7 +63,7 @@ def parse_garmin_time_to_kst_iso(dt_str: str) -> str | None:
     return dt.astimezone(local_tz).isoformat()
 
 
-def get_all_activities(garmin, limit=1000):
+def get_all_activities(garmin, limit=100):
     return garmin.get_activities(0, limit)
 
 
